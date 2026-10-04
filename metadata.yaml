@@ -1,0 +1,6 @@
+name: astrbot_plugin_pjsk_station
+display_name: PJSK Station
+desc: 查询 Sekai Station(国服)与 プロセカ Station(日服)的实时房间列表,渲染为图片
+version: v1.1.0
+author: 慵懒午睡
+repo: https://github.com/yonglanws/astrbot_plugin_pjsk_station
