@@ -30,7 +30,7 @@ async def _fetch_and_render(server: str) -> str:
     "astrbot_plugin_pjsk_station",
     "astrbot_plugin_pjsk_station",
     "查询 Proseka Station 实时房间列表",
-    "1.1.0",
+    "1.2.0",
 )
 class PJSKStationPlugin(Star):
     def __init__(self, context: Context):

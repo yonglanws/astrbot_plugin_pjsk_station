@@ -30,7 +30,7 @@ pip install -r requirements.txt
 
 中文用插件自带的 `font.ttf`。找不到该文件时，会依次尝试文泉驿、Noto、微软雅黑、黑体等系统字体。
 
-房间文案里的 emoji 由 pilmoji 从 `emojicdn.elk.sh` 下载后贴上。这个 CDN 在国内经常不可达；下载失败时自动改用纯文字绘制，emoji 会变成缺字方块，图片仍会发出。
+房间文案里的 emoji 按当前环境自动选择画法：系统里装有彩色 emoji 字体（Windows 自带 `seguiemj.ttf`，Linux 是 `fonts-noto-color-emoji`）时用本地字体绘制，不联网、十几个房间不到 0.2 秒；没有彩色字体时才用 pilmoji 从 `emojicdn.elk.sh` 下载贴图，慢一些但 emoji 更精致。Linux 上想走本地字体可以装 `fonts-noto-color-emoji`，不装也能正常显示。
 
 ## 行为说明
 
