@@ -1,6 +1,9 @@
 """把房间列表画成一张图片。
 
 同步函数,调用方应放进 asyncio.to_thread,避免阻塞 bot 事件循环。
+
+emoji 用本地彩色字体(Windows 的 seguiemj.ttf、Linux 的 NotoColorEmoji)
+绘制,不依赖 pilmoji 的外网 CDN。
 """
 
 import tempfile
@@ -9,22 +12,19 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-try:
-    from pilmoji import Pilmoji
-except ImportError:
-    Pilmoji = None
-
 from .station_api import RoomInfo
 
-WIDTH = 580
-MARGIN = 24
-ROW_HEIGHT = 72
+WIDTH = 620
+MARGIN = 26
+ROW_HEIGHT = 76
 LINE_COLOR = "#E5E5EA"
 BG_COLOR = "#FFFFFF"
 TEXT_PRIMARY = "#1D1D1F"
 TEXT_SECONDARY = "#6E6E73"
 TEXT_TERTIARY = "#86868B"
 ACCENT_COLOR = "#007AFF"
+
+REPO_URL = "https://github.com/yonglanws/astrbot_plugin_pjsk_station"
 
 _FALLBACK_FONT_PATHS = [
     str(Path(__file__).parent / "font.ttf"),
@@ -39,21 +39,122 @@ _FALLBACK_FONT_PATHS = [
     "C:/Windows/Fonts/arial.ttf",
 ]
 
-_font_cache: dict[int, ImageFont.FreeTypeFont] = {}
+# 彩色 emoji 字体:装了就本地绘制,找不到就退回 pilmoji(需要联网 CDN)
+_EMOJI_FONT_PATHS = [
+    "C:/Windows/Fonts/seguiemj.ttf",
+    "/usr/share/fonts/opentype/noto/NotoColorEmoji.ttf",
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "/System/Library/Fonts/Apple Color Emoji.ttc",
+]
+
+_font_cache: dict[tuple[int, bool], ImageFont.FreeTypeFont] = {}
+_emoji_font_path: str | None = None
 
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont:
-    cached = _font_cache.get(size)
+    key = (size, False)
+    cached = _font_cache.get(key)
     if cached is not None:
         return cached
     for path in _FALLBACK_FONT_PATHS:
         try:
             font = ImageFont.truetype(path, size)
-            _font_cache[size] = font
+            _font_cache[key] = font
             return font
         except Exception:
             continue
     return ImageFont.load_default()
+
+
+def _load_emoji_font_path() -> str | None:
+    global _emoji_font_path
+    if _emoji_font_path is not None:
+        return _emoji_font_path
+    for path in _EMOJI_FONT_PATHS:
+        try:
+            ImageFont.truetype(path)
+            _emoji_font_path = path
+            return path
+        except Exception:
+            continue
+    return None
+
+
+def _emoji_font_for(size: int) -> ImageFont.FreeTypeFont | None:
+    """按正文字号加载彩色 emoji 字体(emoji 位图本身偏小,放大一点)。"""
+    path = _load_emoji_font_path()
+    if path is None:
+        return None
+    key = (size, True)
+    cached = _font_cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        font = ImageFont.truetype(path, int(size * 1.25))
+        _font_cache[key] = font
+        return font
+    except Exception:
+        return None
+
+
+_EMOJI_RANGES = (
+    (0x1F300, 0x1FAFF),  # 杂项符号与象形文字、补充象形文字
+    (0x2600, 0x27BF),    # 杂项符号、装饰符号
+    (0x1F000, 0x1F2FF),  # 麻将牌等
+    (0xFE0F, 0xFE0F),    # 变体选择符-16
+)
+
+
+def _is_emoji(ch: str) -> bool:
+    code = ord(ch)
+    return any(lo <= code <= hi for lo, hi in _EMOJI_RANGES)
+
+
+class _TextRenderer:
+    """逐段绘制文本:emoji 用彩色字体,其余用普通字体。
+
+    彩色 emoji 字体里不含中日韩文字,普通字体里不含 emoji,
+    按字符拆分可以两者都用上,并且不依赖任何网络请求。
+    """
+
+    def __init__(self, draw: ImageDraw.ImageDraw):
+        self.draw = draw
+
+    def _segment(self, text: str, font: ImageFont.FreeTypeFont):
+        """把文本切成 (片段, 是否是emoji) 序列,emoji 字体找不到时整体不切。"""
+        emoji_font = _emoji_font_for(font.size)
+        if emoji_font is None:
+            return [(text, False)]
+        segments = []
+        buf = ""
+        buf_is_emoji = False
+        for ch in text:
+            ch_is_emoji = _is_emoji(ch)
+            if buf and ch_is_emoji != buf_is_emoji:
+                segments.append((buf, buf_is_emoji))
+                buf = ""
+            buf += ch
+            buf_is_emoji = ch_is_emoji
+        if buf:
+            segments.append((buf, buf_is_emoji))
+        return segments
+
+    def text(self, xy, text, fill, font) -> None:
+        x, y = xy
+        segments = self._segment(text, font)
+        if len(segments) == 1 and not segments[0][1]:
+            self.draw.text((x, y), text, font=font, fill=fill)
+            return
+        for segment, is_emoji in segments:
+            seg_font = _emoji_font_for(font.size) if is_emoji else font
+            # 彩色 emoji 位图比文字小,放大的同时上移,让视觉中心对齐正文
+            seg_y = y - (font.size * 0.15) if is_emoji else y
+            try:
+                self.draw.text((x, seg_y), segment, font=seg_font, fill=fill,
+                               embedded_color=is_emoji)
+            except Exception:
+                self.draw.text((x, y), segment, font=font, fill=fill)
+            x += seg_font.getlength(segment)
 
 
 def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
@@ -78,112 +179,81 @@ def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[
     return lines or [text]
 
 
+def _truncate(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
+    if font.getlength(text) <= max_width:
+        return text
+    ellipsis = "…"
+    while text and font.getlength(text + ellipsis) > max_width:
+        text = text[:-1]
+    return text + ellipsis if text else ""
+
+
 def _layout(rooms: list[RoomInfo], font_desc: ImageFont.FreeTypeFont, content_w: int):
     """每行高度:顶部偏移 + 描述行 + 底部间距,不低于最小行高。"""
     row_heights = []
     for room in rooms:
         desc_lines = _wrap_text(room.raw, font_desc, content_w)
-        needed = 34 + len(desc_lines) * 24 + 12
+        needed = 36 + len(desc_lines) * 26 + 14
         row_heights.append(max(ROW_HEIGHT, needed))
     return row_heights
 
 
-class _Canvas:
-    """统一 pilmoji 与纯 PIL 的绘制接口。
-
-    pilmoji 默认从 emojicdn.elk.sh 拉 emoji 贴图且没有缓存,国内网络经常失败,
-    所以任何一次绘制异常都会降级为纯 PIL(emoji 显示为缺字方块,但图能出)。
-    """
-
-    def __init__(self, img: Image.Image):
-        self.img = img
-        self._pilmoji = None
-        self._draw = None
-        if Pilmoji is not None:
-            try:
-                self._pilmoji = Pilmoji(img).__enter__()
-            except Exception:
-                self._pilmoji = None
-        if self._pilmoji is None:
-            self._draw = ImageDraw.Draw(img)
-
-    def text(self, xy, text, fill, font) -> None:
-        if self._pilmoji is not None:
-            try:
-                self._pilmoji.text(xy, text, fill, font)
-                return
-            except Exception:
-                self.close()
-                self._draw = ImageDraw.Draw(self.img)
-        self._draw.text(xy, text, font=font, fill=fill)
-
-    def close(self) -> None:
-        if self._pilmoji is not None:
-            try:
-                self._pilmoji.__exit__(None, None, None)
-            except Exception:
-                pass
-            self._pilmoji = None
-
-
-REPO_URL = "https://github.com/yonglanws/astrbot_plugin_pjsk_station"
-
-
 def render_rooms(rooms: list[RoomInfo], title: str, source_url: str) -> str:
     """渲染房间列表,返回临时 PNG 文件路径(调用方负责删除)。"""
-    font_title = _load_font(32)
-    font_sub = _load_font(16)
-    font_number = _load_font(34)
+    font_title = _load_font(30)
+    font_sub = _load_font(15)
+    font_number = _load_font(32)
     font_desc = _load_font(18)
     font_meta = _load_font(15)
-    font_tiny = _load_font(13)
+    font_tiny = _load_font(12)
 
-    content_x = 145
-    content_w = WIDTH - MARGIN - content_x - 100
-    header_h = 100
+    header_h = 96
+    number_w = font_number.getlength("99999") + 16
+    content_x = MARGIN + number_w + 14
+    time_w = font_meta.getlength("999分钟前")
+    content_w = WIDTH - MARGIN - content_x - time_w - 16
 
     row_heights = _layout(rooms, font_desc, content_w)
-    total_height = header_h + sum(row_heights) + 56
+    footer_h = 46
+    total_height = header_h + sum(row_heights) + footer_h
     img = Image.new("RGB", (WIDTH, total_height), BG_COLOR)
-    canvas = _Canvas(img)
+    draw = ImageDraw.Draw(img)
+    renderer = _TextRenderer(draw)
 
-    try:
-        canvas.text((MARGIN, 20), title, TEXT_PRIMARY, font_title)
-        now_str = datetime.now().strftime("%H:%M:%S")
-        canvas.text(
-            (MARGIN, 62),
-            f"{len(rooms)} 个房间 · 更新于 {now_str}",
-            TEXT_SECONDARY, font_sub,
+    renderer.text((MARGIN, 18), title, TEXT_PRIMARY, font_title)
+    now_str = datetime.now().strftime("%H:%M:%S")
+    renderer.text(
+        (MARGIN, 58),
+        f"{len(rooms)} 个房间 · 更新于 {now_str}",
+        TEXT_SECONDARY, font_sub,
+    )
+    draw.line([(MARGIN, 82), (WIDTH - MARGIN, 82)], fill=LINE_COLOR, width=1)
+
+    y = header_h
+    for i, room in enumerate(rooms):
+        renderer.text((MARGIN, y + 16), room.number, ACCENT_COLOR, font_number)
+
+        meta = _truncate(room.username, font_meta, content_w)
+        renderer.text((content_x, y + 10), meta, TEXT_SECONDARY, font_meta)
+
+        desc_y = y + 36
+        for line in _wrap_text(room.raw, font_desc, content_w):
+            renderer.text((content_x, desc_y), line, TEXT_PRIMARY, font_desc)
+            desc_y += 26
+
+        renderer.text(
+            (WIDTH - MARGIN - time_w, y + 12),
+            room.time, TEXT_SECONDARY, font_meta,
         )
 
-        y = header_h
-        for i, room in enumerate(rooms):
-            canvas.text((MARGIN, y + 14), room.number, ACCENT_COLOR, font_number)
-
-            if room.username:
-                canvas.text((content_x, y + 10), room.username, TEXT_SECONDARY, font_meta)
-
-            desc_y = y + 34
-            for line in _wrap_text(room.raw, font_desc, content_w):
-                canvas.text((content_x, desc_y), line, TEXT_PRIMARY, font_desc)
-                desc_y += 24
-
-            time_w = font_meta.getlength(room.time)
-            canvas.text((WIDTH - MARGIN - time_w, y + 26), room.time, TEXT_SECONDARY, font_meta)
-
-            y += row_heights[i]
-
-        canvas.text((MARGIN, y + 12), REPO_URL, TEXT_TERTIARY, font_tiny)
-        canvas.text((MARGIN, y + 32), source_url, TEXT_TERTIARY, font_tiny)
-    finally:
-        canvas.close()
-
-    draw = ImageDraw.Draw(img)
-    y = header_h
-    for i in range(len(rooms)):
-        line_y = y + row_heights[i] - 1
-        draw.line([(MARGIN, line_y), (WIDTH - MARGIN, line_y)], fill=LINE_COLOR, width=1)
         y += row_heights[i]
+        if i < len(rooms) - 1:
+            line_y = y - 1
+            draw.line([(MARGIN, line_y), (WIDTH - MARGIN, line_y)], fill=LINE_COLOR, width=1)
+
+    draw.line([(MARGIN, y + 8), (WIDTH - MARGIN, y + 8)], fill=LINE_COLOR, width=1)
+    renderer.text((MARGIN, y + 16), REPO_URL, TEXT_TERTIARY, font_tiny)
+    renderer.text((MARGIN, y + 32), source_url, TEXT_TERTIARY, font_tiny)
 
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     img.save(tmp.name, "PNG")
