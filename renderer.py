@@ -198,43 +198,87 @@ def _layout(rooms: list[RoomInfo], font_desc: ImageFont.FreeTypeFont, content_w:
     return row_heights
 
 
+def _draw_source_badge(draw: ImageDraw.ImageDraw, renderer: _TextRenderer,
+                       x: int, y: int, source: str, font: ImageFont.FreeTypeFont,
+                       max_w: float) -> None:
+    """来源标签,画成小圆角胶囊。放不下就整体省略。"""
+    if not source:
+        return
+    text = source
+    if font.getlength(text) + 14 > max_w:
+        text = _truncate(text, font, max(0, max_w - 14))
+        if not text:
+            return
+    pad_x, pad_y = 6, 2
+    w = font.getlength(text) + pad_x * 2
+    h = font.size + pad_y * 2
+    draw.rounded_rectangle(
+        [(x, y), (x + w, y + h)], radius=h / 2, fill="#F2F2F7",
+    )
+    renderer.text((x + pad_x, y + pad_y), text, TEXT_SECONDARY, font)
+
+
 def render_rooms(rooms: list[RoomInfo], title: str, source_url: str) -> str:
     """渲染房间列表,返回临时 PNG 文件路径(调用方负责删除)。"""
-    font_title = _load_font(30)
-    font_sub = _load_font(15)
-    font_number = _load_font(32)
-    font_desc = _load_font(18)
-    font_meta = _load_font(15)
+    font_title = _load_font(28)
+    font_sub = _load_font(14)
+    font_number = _load_font(30)
+    font_desc = _load_font(17)
+    font_meta = _load_font(14)
+    font_badge = _load_font(12)
     font_tiny = _load_font(12)
 
-    header_h = 96
-    number_w = font_number.getlength("99999") + 16
-    content_x = MARGIN + number_w + 14
+    header_h = 92
+    number_w = font_number.getlength("99999") + 14
     time_w = font_meta.getlength("999分钟前")
-    content_w = WIDTH - MARGIN - content_x - time_w - 16
+    content_x = MARGIN + number_w + 16
+    content_w = WIDTH - MARGIN - content_x - time_w - 14
 
     row_heights = _layout(rooms, font_desc, content_w)
-    footer_h = 46
+    footer_h = 48
     total_height = header_h + sum(row_heights) + footer_h
     img = Image.new("RGB", (WIDTH, total_height), BG_COLOR)
     draw = ImageDraw.Draw(img)
     renderer = _TextRenderer(draw)
 
-    renderer.text((MARGIN, 18), title, TEXT_PRIMARY, font_title)
+    # 头部:左侧竖条 + 标题 + 副标题,底部一条细分隔线
+    draw.rounded_rectangle(
+        [(MARGIN, 22), (MARGIN + 4, 46)], radius=2, fill=ACCENT_COLOR,
+    )
+    renderer.text((MARGIN + 14, 18), title, TEXT_PRIMARY, font_title)
     now_str = datetime.now().strftime("%H:%M:%S")
     renderer.text(
-        (MARGIN, 58),
+        (MARGIN + 14, 54),
         f"{len(rooms)} 个房间 · 更新于 {now_str}",
         TEXT_SECONDARY, font_sub,
     )
-    draw.line([(MARGIN, 82), (WIDTH - MARGIN, 82)], fill=LINE_COLOR, width=1)
+    draw.line([(MARGIN, 76), (WIDTH - MARGIN, 76)], fill=LINE_COLOR, width=1)
 
     y = header_h
     for i, room in enumerate(rooms):
-        renderer.text((MARGIN, y + 16), room.number, ACCENT_COLOR, font_number)
+        # 房号:胶囊底色 + 主色数字
+        num_h = font_number.size + 12
+        draw.rounded_rectangle(
+            [(MARGIN, y + 14), (MARGIN + number_w, y + 14 + num_h)],
+            radius=8, fill="#F0F6FF",
+        )
+        num_w = font_number.getlength(room.number)
+        renderer.text(
+            (MARGIN + (number_w - num_w) / 2, y + 20),
+            room.number, ACCENT_COLOR, font_number,
+        )
 
-        meta = _truncate(room.username, font_meta, content_w)
+        # 用户名与来源徽章共享一行:用户名先截断,徽章只用剩下的宽度
+        badge_w = font_badge.getlength(room.source) + 20 if room.source else 0
+        meta = _truncate(room.username, font_meta, max(40, content_w - badge_w - 8))
+        meta_w = font_meta.getlength(meta)
         renderer.text((content_x, y + 10), meta, TEXT_SECONDARY, font_meta)
+        if room.source and meta_w + 8 + badge_w <= content_w:
+            _draw_source_badge(
+                draw, renderer,
+                content_x + meta_w + 8, y + 8,
+                room.source, font_badge, content_w - meta_w - 8,
+            )
 
         desc_y = y + 36
         for line in _wrap_text(room.raw, font_desc, content_w):
@@ -248,8 +292,7 @@ def render_rooms(rooms: list[RoomInfo], title: str, source_url: str) -> str:
 
         y += row_heights[i]
         if i < len(rooms) - 1:
-            line_y = y - 1
-            draw.line([(MARGIN, line_y), (WIDTH - MARGIN, line_y)], fill=LINE_COLOR, width=1)
+            draw.line([(MARGIN, y - 1), (WIDTH - MARGIN, y - 1)], fill=LINE_COLOR, width=1)
 
     draw.line([(MARGIN, y + 8), (WIDTH - MARGIN, y + 8)], fill=LINE_COLOR, width=1)
     renderer.text((MARGIN, y + 16), REPO_URL, TEXT_TERTIARY, font_tiny)

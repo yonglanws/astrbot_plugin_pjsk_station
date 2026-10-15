@@ -45,6 +45,7 @@ class RoomInfo:
     username: str
     time: str
     timestamp: int  # unix 秒,用于排序
+    source: str = ""  # 来源频道/账号,如 robo、haruki_xxxx、X@xxx
 
 
 def _normalize_digits(text: str) -> str:
@@ -135,6 +136,7 @@ def _ingest_cn_room(payload: str, rooms: dict[str, RoomInfo], now: float) -> Non
         username=str(data.get("name", "")),
         time=_format_relative_time(int(now - timestamp)),
         timestamp=int(timestamp),
+        source=str(data.get("source", "")),
     )
 
 
@@ -203,5 +205,6 @@ def _ingest_jp_message(msg: str, rooms: dict[str, RoomInfo], now_ms: float) -> b
             username=str(user.get("username", "")),
             time=_format_relative_time(int((now_ms - timestamp_ms) / 1000)),
             timestamp=int(timestamp_ms / 1000),
+            source=str(source.get("name", "")),
         )
     return True
